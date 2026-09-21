@@ -5,19 +5,50 @@
 #include "levischematic/schematic/placement/PlacementStore.h"
 
 #include "mc/client/renderer/chunks/RenderChunkCoordinator.h"
+#include "mc/world/level/BlockSource.h"
+#include "mc/world/level/chunk/LevelChunk.h"
 
 #include <unordered_set>
 
 namespace levischematic::render {
-namespace {
 
-int floorDiv16(int value) noexcept {
-    return value / 16 - (value % 16 != 0 && value < 0 ? 1 : 0);
+std::optional<int> topRenderableSubChunkOriginY(BlockSource* source, BlockPos const& pos) {
+    if (!source) {
+        return std::nullopt;
+    }
+    auto* chunk = source->getChunkAt(pos);
+    if (!chunk) {
+        return std::nullopt;
+    }
+    int count = chunk->getSubChunkCountUpToHighestNonAirBlock();
+    if (count <= 0) {
+        return std::nullopt;
+    }
+    return chunk->mMin->y + (count - 1) * 16;
 }
 
-uint64_t renderColumnKeyFromWorldPos(int x, int z) noexcept {
-    return (static_cast<uint64_t>(static_cast<uint32_t>(floorDiv16(x))) << 21)
-         | static_cast<uint64_t>(static_cast<uint32_t>(floorDiv16(z)) & 0x1FFFFFu);
+BlockPos resolveRenderSubChunkOrigin(BlockSource* source, BlockPos const& pos) {
+    auto origin = util::subChunkOrigin(pos.x, pos.y, pos.z);
+    if (auto topY = topRenderableSubChunkOriginY(source, pos); topY && origin.y > *topY) {
+        origin.y = *topY;
+    }
+    return origin;
+}
+
+namespace {
+
+using util::renderColumnKeyFromWorldPos;
+
+// Requests a rebuild of the render chunk that draws the projected block at `pos`.
+void markSubChunkDirty(RenderChunkCoordinator& coordinator, BlockSource* source, BlockPos const& pos) {
+    auto renderOrigin = resolveRenderSubChunkOrigin(source, pos);
+    if (renderOrigin.y != util::subChunkOrigin(pos.x, pos.y, pos.z).y) {
+        // Above the terrain: rebuild the topmost renderable sub-chunk of the column instead.
+        BlockPos redirected{pos.x, renderOrigin.y, pos.z};
+        coordinator._setDirty(redirected, redirected, true, false, false);
+        return;
+    }
+    coordinator._setDirty(pos, pos, true, false, false);
 }
 
 void markSceneSubChunks(std::unordered_set<uint64_t>& dirtyKeys, ProjectionScene::DimensionScene const* scene) {
@@ -38,6 +69,7 @@ void markSceneSubChunks(std::unordered_set<uint64_t>& dirtyKeys, ProjectionScene
 
 void triggerRebuildForScene(
     std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+    BlockSource*                                   source,
     ProjectionScene::DimensionScene const*         currentScene,
     ProjectionScene::DimensionScene const*         previousScene = nullptr
 ) {
@@ -54,7 +86,7 @@ void triggerRebuildForScene(
             auto currentIt = currentScene->bySubChunk.find(subChunkKey);
             if (currentIt != currentScene->bySubChunk.end() && !currentIt->second.empty()) {
                 auto const& pos = currentIt->second.front().pos;
-                coordinator->_setDirty(pos, pos, true, false, false);
+                markSubChunkDirty(*coordinator, source, pos);
                 continue;
             }
 
@@ -63,7 +95,7 @@ void triggerRebuildForScene(
                     (void)color;
                     auto const pos = util::decodePosKey(posKey);
                     if (util::subChunkKeyFromWorldPos(pos.x, pos.y, pos.z) == subChunkKey) {
-                        coordinator->_setDirty(pos, pos, true, false, false);
+                        markSubChunkDirty(*coordinator, source, pos);
                         break;
                     }
                 }
@@ -76,7 +108,7 @@ void triggerRebuildForScene(
             auto previousIt = previousScene->bySubChunk.find(subChunkKey);
             if (previousIt != previousScene->bySubChunk.end() && !previousIt->second.empty()) {
                 auto const& pos = previousIt->second.front().pos;
-                coordinator->_setDirty(pos, pos, true, false, false);
+                markSubChunkDirty(*coordinator, source, pos);
                 continue;
             }
 
@@ -85,7 +117,7 @@ void triggerRebuildForScene(
                     (void)color;
                     auto const pos = util::decodePosKey(posKey);
                     if (util::subChunkKeyFromWorldPos(pos.x, pos.y, pos.z) == subChunkKey) {
-                        coordinator->_setDirty(pos, pos, true, false, false);
+                        markSubChunkDirty(*coordinator, source, pos);
                         break;
                     }
                 }
@@ -236,19 +268,23 @@ void ProjectionProjector::rebuild(
     verifier::VerifierState const&   verifierState,
     editor::ViewState const&         viewState
 ) {
-    rebuildLocked(state, verifierState, viewState, nullptr, false);
+    rebuildLocked(state, verifierState, viewState, nullptr, nullptr, false);
 }
 
 void ProjectionProjector::rebuildAndRefresh(
     placement::PlacementState const&               state,
     verifier::VerifierState const&                 verifierState,
     editor::ViewState const&                       viewState,
-    std::shared_ptr<RenderChunkCoordinator> const& coordinator
+    std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+    BlockSource*                                   source
 ) {
-    rebuildLocked(state, verifierState, viewState, coordinator, true);
+    rebuildLocked(state, verifierState, viewState, coordinator, source, true);
 }
 
-void ProjectionProjector::triggerRebuild(std::shared_ptr<RenderChunkCoordinator> const& coordinator) const {
+void ProjectionProjector::triggerRebuild(
+    std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+    BlockSource*                                   source
+) const {
     auto current = scene();
     if (!current) {
         return;
@@ -256,21 +292,22 @@ void ProjectionProjector::triggerRebuild(std::shared_ptr<RenderChunkCoordinator>
 
     for (auto const& [dimensionId, dimensionScene] : current->byDimension) {
         (void)dimensionId;
-        triggerRebuildForScene(coordinator, &dimensionScene);
+        triggerRebuildForScene(coordinator, source, &dimensionScene);
     }
 }
 
 void ProjectionProjector::triggerRebuildForPosition(
     int                                            dimensionId,
     BlockPos const&                                pos,
-    std::shared_ptr<RenderChunkCoordinator> const& coordinator
+    std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+    BlockSource*                                   source
 ) const {
     (void)dimensionId;
     if (!coordinator) {
         return;
     }
 
-    coordinator->_setDirty(pos, pos, true, false, false);
+    markSubChunkDirty(*coordinator, source, pos);
 }
 
 void ProjectionProjector::clear() {
@@ -287,6 +324,7 @@ void ProjectionProjector::rebuildLocked(
     verifier::VerifierState const&                 verifierState,
     editor::ViewState const&                       viewState,
     std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+    BlockSource*                                   source,
     bool                                           triggerRefresh
 ) {
     std::shared_ptr<const ProjectionScene> previousScene;
@@ -340,7 +378,7 @@ void ProjectionProjector::rebuildLocked(
                 }
             }
 
-            triggerRebuildForScene(coordinator, currentDimensionScene, previousDimensionScene);
+            triggerRebuildForScene(coordinator, source, currentDimensionScene, previousDimensionScene);
         }
     }
 }

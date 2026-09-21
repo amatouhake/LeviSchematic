@@ -14,13 +14,14 @@ ProjectionService::ProjectionService(
     , mProjector(projector) {}
 
 bool ProjectionService::flushRefresh(
-    std::shared_ptr<RenderChunkCoordinator> const& coordinator
+    std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+    BlockSource*                                   source
 ) {
     if (!mProjector.needsRefresh(mPlacementState.revision, mVerifierState.revision, mViewState.revision)) {
         return false;
     }
 
-    mProjector.rebuildAndRefresh(mPlacementState, mVerifierState, mViewState, coordinator);
+    mProjector.rebuildAndRefresh(mPlacementState, mVerifierState, mViewState, coordinator, source);
     return true;
 }
 

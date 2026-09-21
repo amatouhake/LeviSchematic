@@ -115,7 +115,7 @@ void VerifierService::handleBlockChanged(BlockSource& source, BlockPos const& po
 
     updateStatus(dimensionId, pos, evaluateBlock(expectedIt->second, source, block));
     mProjector.rebuild(mPlacementState, mState, mViewState);
-    mProjector.triggerRebuildForPosition(dimensionId, pos, resolveCoordinator(source));
+    mProjector.triggerRebuildForPosition(dimensionId, pos, resolveCoordinator(source), &source);
 }
 
 void VerifierService::refresh() {
@@ -150,7 +150,7 @@ void VerifierService::refresh(BlockSource& source) {
         updateStatus(dimensionId, expected.pos, evaluateBlock(expected, source, block));
     }
 
-    mProjector.rebuildAndRefresh(mPlacementState, mState, mViewState, resolveCoordinator(source));
+    mProjector.rebuildAndRefresh(mPlacementState, mState, mViewState, resolveCoordinator(source), &source);
 }
 
 void VerifierService::handleJoinLevel() {

@@ -61,6 +61,15 @@ inline uint64_t subChunkKeyFromWorldPos(int wx, int wy, int wz) noexcept {
     return encodeSubChunkKey(origin);
 }
 
+// 世界坐标所在渲染列（16x16 区块柱）的 key
+inline uint64_t renderColumnKeyFromWorldPos(int wx, int wz) noexcept {
+    auto floorDiv16 = [](int v) -> int {
+        return v / 16 - (v % 16 != 0 && v < 0 ? 1 : 0);
+    };
+    return (static_cast<uint64_t>(static_cast<uint32_t>(floorDiv16(wx))) << 21)
+         | static_cast<uint64_t>(static_cast<uint32_t>(floorDiv16(wz)) & 0x1FFFFFu);
+}
+
 // SubChunk 原点从世界坐标
 inline BlockPos subChunkOrigin(int wx, int wy, int wz) noexcept {
     auto floorDiv16 = [](int v) -> int {

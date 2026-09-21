@@ -12,10 +12,12 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+class BlockSource;
 class RenderChunkCoordinator;
 
 namespace levischematic::placement {
@@ -38,6 +40,15 @@ struct ProjEntry {
 };
 
 inline constexpr int RENDERLAYER_BLEND = 3;
+
+// Origin Y of the topmost sub-chunk of the column containing `pos` that the client builds
+// render geometry for (sub-chunks above the highest non-air block get none), or nullopt when the
+// chunk is not available through `source`.
+[[nodiscard]] std::optional<int> topRenderableSubChunkOriginY(BlockSource* source, BlockPos const& pos);
+
+// Sub-chunk origin whose render chunk draws the projected block at `pos`: its own sub-chunk, or
+// the topmost renderable sub-chunk of the column when `pos` lies above it.
+[[nodiscard]] BlockPos resolveRenderSubChunkOrigin(BlockSource* source, BlockPos const& pos);
 
 struct ProjectionScene {
     struct DimensionScene {
@@ -94,13 +105,16 @@ public:
         placement::PlacementState const&               state,
         verifier::VerifierState const&                 verifierState,
         editor::ViewState const&                       viewState,
-        std::shared_ptr<RenderChunkCoordinator> const& coordinator
+        std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+        BlockSource*                                   source = nullptr
     );
-    void triggerRebuild(std::shared_ptr<RenderChunkCoordinator> const& coordinator) const;
+    void
+    triggerRebuild(std::shared_ptr<RenderChunkCoordinator> const& coordinator, BlockSource* source = nullptr) const;
     void triggerRebuildForPosition(
         int                                            dimensionId,
         BlockPos const&                                pos,
-        std::shared_ptr<RenderChunkCoordinator> const& coordinator
+        std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+        BlockSource*                                   source = nullptr
     ) const;
     void clear();
 
@@ -110,6 +124,7 @@ private:
         verifier::VerifierState const&                 verifierState,
         editor::ViewState const&                       viewState,
         std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+        BlockSource*                                   source,
         bool                                           triggerRefresh
     );
 
