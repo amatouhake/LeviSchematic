@@ -57,6 +57,33 @@ bool gRenderHooksRegistered = false;
 thread_local RenderChunkBuilder*  tl_activeBuilder  = nullptr;
 thread_local RenderChunkGeometry* tl_activeGeometry = nullptr;
 
+// Scopes every projection thread-local to one RenderChunkBuilder::build call: the state is
+// reset on entry and again when the call leaves (normally or by exception), so a build that
+// never reaches the injection point, or later BlockTessellator work on the same worker
+// thread, can never observe stale projection state.
+struct ProjectionBuildScope {
+    ProjectionBuildScope(RenderChunkBuilder& builder, RenderChunkGeometry& geometry) {
+        reset();
+        tl_activeBuilder  = &builder;
+        tl_activeGeometry = &geometry;
+    }
+    ~ProjectionBuildScope() { reset(); }
+    ProjectionBuildScope(ProjectionBuildScope const&)            = delete;
+    ProjectionBuildScope& operator=(ProjectionBuildScope const&) = delete;
+
+    static void reset() {
+        tl_activeBuilder  = nullptr;
+        tl_activeGeometry = nullptr;
+        tl_hasProjection  = false;
+        tl_currentScene.reset();
+    }
+};
+
+// Set while ProjectionTextureUploadHook re-uploads a texture itself; the upload overloads may
+// forward to each other, so the hook must ignore its own nested call instead of installing
+// and removing itself around it (which would also blind it on every other thread).
+thread_local bool tl_inProjectionTextureUpload = false;
+
 int resolveBuilderDimensionId(RenderChunkBuilder const& builder) {
     if (builder.mBlockTessellator && builder.mBlockTessellator->mRegion) {
         return static_cast<int>(builder.mBlockTessellator->mRegion->getDimensionId());
@@ -103,11 +130,17 @@ void injectProjectionIntoBuilder(RenderChunkBuilder& builder, RenderChunkGeometr
     auto        subChunkKey    = subChunkKeyFromWorldPos(renderPosition.x, renderPosition.y, renderPosition.z);
     auto        topY           = topRenderableSubChunkOriginY(region, renderPosition);
     bool        drawsAirAbove  = topY && *topY == renderPosition.y;
+    bool        ownsOwnEntries = !topY || renderPosition.y <= *topY;
 
+    // Every entry is owned by exactly one sub-chunk: its own one while that lies at or below
+    // the top renderable sub-chunk of the column, otherwise the top renderable sub-chunk. A
+    // build of a sub-chunk above that top therefore injects nothing.
     std::vector<ProjEntry const*> entries;
-    if (auto it = tl_currentScene->bySubChunk.find(subChunkKey); it != tl_currentScene->bySubChunk.end()) {
-        for (auto const& entry : it->second) {
-            entries.push_back(&entry);
+    if (ownsOwnEntries) {
+        if (auto it = tl_currentScene->bySubChunk.find(subChunkKey); it != tl_currentScene->bySubChunk.end()) {
+            for (auto const& entry : it->second) {
+                entries.push_back(&entry);
+            }
         }
     }
     if (drawsAirAbove) {
@@ -148,14 +181,14 @@ LL_TYPE_INSTANCE_HOOK(
     bool                                                       forExport,
     ::mce::framebuilder::FrameLightingModelCapabilities const& lightingModelCapabilities
 ) {
-    tl_hasProjection = false;
-    tl_currentScene.reset();
-    tl_activeBuilder  = this;
-    tl_activeGeometry = &renderChunkGeometry;
+    ProjectionBuildScope scope(*this, renderChunkGeometry);
     origin(renderChunkGeometry, transparentLeaves, lightingType, forExport, lightingModelCapabilities);
-    tl_activeBuilder  = nullptr;
-    tl_activeGeometry = nullptr;
 }
+
+// Injection point. On this client the border pass below is the last exported call before the
+// per-layer tessellation loop; it is skipped only for GUI block previews
+// (RenderChunkBuilder::mGUIRendering), which must not show projections anyway. A build that
+// does not reach it simply injects nothing; ProjectionBuildScope clears the state afterwards.
 
 LL_TYPE_STATIC_HOOK(
     ProjectionSortBorderHook,
@@ -298,7 +331,7 @@ LL_TYPE_INSTANCE_HOOK(
     gsl::not_null<::std::shared_ptr<::cg::TextureSetDefinition>> textureSetDefinition
 ) {
     auto& manager = block_actor::BlockActorRenderSchematic::getInstance();
-    if (manager.renderersIsEmpty()) {
+    if (tl_inProjectionTextureUpload || manager.renderersIsEmpty()) {
         return origin(resourceLocation, textureSetDefinition);
     }
 
@@ -320,10 +353,15 @@ LL_TYPE_INSTANCE_HOOK(
                 }
             }
 
-            ProjectionTextureUploadHook::unhook();
-            uploadTexture(target.resource->blendRes, std::move(newBuf));
-            manager.onTextureUploaded(target, this);
-            ProjectionTextureUploadHook::hook();
+            tl_inProjectionTextureUpload = true;
+            try {
+                uploadTexture(target.resource->blendRes, std::move(newBuf));
+                manager.onTextureUploaded(target, this);
+            } catch (...) {
+                tl_inProjectionTextureUpload = false;
+                throw;
+            }
+            tl_inProjectionTextureUpload = false;
         }
     }
 

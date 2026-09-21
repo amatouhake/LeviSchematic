@@ -99,8 +99,13 @@ std::optional<verifier::BlockEntitySnapshot> getBlockEntitySnapshot(StructureTem
 
 // Identity data-load helper used when instantiating schematic block actors purely for
 // projection rendering. StructureDataLoadHelper's constructor is no longer exported by the
-// game, and the block actor position is passed to BlockActor::loadStatic explicitly, so no
-// coordinate remapping is needed here.
+// game, and the block actor position is passed to BlockActor::loadStatic explicitly, so the
+// block actor's own position no longer depends on the helper. Everything else that
+// StructureDataLoadHelper would remap (other world positions embedded in the NBT, e.g. piston
+// / moving block / end gateway targets, and actor unique IDs) is left as stored in the file.
+// That is correct for the block actor renderers this mod provides (chest: only its own state
+// and position are used); a renderer that depends on such embedded positions would need a
+// structure-aware helper.
 class ProjectionDataLoadHelper : public DataLoadHelper {
 public:
     Vec3            loadPosition(Vec3 const& position) override { return position; }
