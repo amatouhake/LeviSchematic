@@ -11,10 +11,14 @@
 #include "mc/client/renderer/BaseActorRenderContext.h"
 #include "mc/client/renderer/Tessellator.h"
 #include "mc/client/renderer/game/LevelRendererCamera.h"
-#include "mc/common/Globals.h"
 #include "mc/common/client/renderer/helpers/MeshHelpers.h"
-#include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
+#include "mc/deps/core/math/Color.h"
+#include "mc/deps/core_graphics/enums/PrimitiveMode.h"
+#include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
+#include "mc/deps/renderer/Camera.h"
+#include "mc/deps/renderer/MatrixStack.h"
 #include "mc/deps/renderer/ShaderColor.h"
+#include "mc/world/item/HandSlot.h"
 #include "mc/world/actor/player/Inventory.h"
 #include "mc/world/actor/player/Player.h"
 #include "mc/world/actor/player/PlayerInventory.h"
@@ -102,6 +106,32 @@ std::array<WireframeQuad, 24> GenerateStructureBlockWireframe(const BlockPos& si
     return quadList;
 }
 
+// Replacement for the game's former global `tessellateWireBox`, which is no longer exported.
+void tessellateWireBox(Tessellator& tess, AABB const& bb) {
+    tess.begin({}, mce::PrimitiveMode::LineList, 24, false);
+    auto line = [&](float x0, float y0, float z0, float x1, float y1, float z1) {
+        tess.vertex(x0, y0, z0);
+        tess.vertex(x1, y1, z1);
+    };
+    auto const& a = bb.min;
+    auto const& b = bb.max;
+    // bottom
+    line(a.x, a.y, a.z, b.x, a.y, a.z);
+    line(b.x, a.y, a.z, b.x, a.y, b.z);
+    line(b.x, a.y, b.z, a.x, a.y, b.z);
+    line(a.x, a.y, b.z, a.x, a.y, a.z);
+    // top
+    line(a.x, b.y, a.z, b.x, b.y, a.z);
+    line(b.x, b.y, a.z, b.x, b.y, b.z);
+    line(b.x, b.y, b.z, a.x, b.y, b.z);
+    line(a.x, b.y, b.z, a.x, b.y, a.z);
+    // verticals
+    line(a.x, a.y, a.z, a.x, b.y, a.z);
+    line(b.x, a.y, a.z, b.x, b.y, a.z);
+    line(b.x, a.y, b.z, b.x, b.y, b.z);
+    line(a.x, a.y, b.z, a.x, b.y, b.z);
+}
+
 void DrawAxisLines(
     ScreenContext&          screenCtx,
     Tessellator&            tess,
@@ -126,14 +156,7 @@ void DrawAxisLines(
         tess.vertex(quad.quad[3].x, quad.quad[3].y, quad.quad[3].z);
     }
 
-    std::variant<
-        std::monostate,
-        UIActorOffscreenCaptureDescription,
-        UIThumbnailMeshOffscreenCaptureDescription,
-        UIMeshOffscreenCaptureDescription,
-        UIStructureVolumeOffscreenCaptureDescription>
-        captureDesc;
-    MeshHelpers::renderMeshImmediately(screenCtx, tess, material, captureDesc);
+    MeshHelpers::renderMeshImmediately(screenCtx, tess, material, OffscreenCaptureDescription{});
 
     currentMat.stack->_isDirty = true;
     if (currentMat.stack->sortOrigin->has_value()
@@ -163,34 +186,30 @@ void DrawPosLine(
     screenCtx.currentShaderColor.color = mce::Color::YELLOW();
     screenCtx.currentShaderColor.dirty = true;
 
-    std::variant<
-        std::monostate,
-        UIActorOffscreenCaptureDescription,
-        UIThumbnailMeshOffscreenCaptureDescription,
-        UIMeshOffscreenCaptureDescription,
-        UIStructureVolumeOffscreenCaptureDescription>
-        captureDesc{};
-
-    MeshHelpers::renderMeshImmediately(screenCtx, tess, material, captureDesc);
+    MeshHelpers::renderMeshImmediately(screenCtx, tess, material, OffscreenCaptureDescription{});
 }
 
 } // namespace
 
+// LevelRendererCamera::renderStructureWireframes is no longer exported, so the selection
+// wireframes are drawn right after the alpha pass of the block entity rendering, which runs
+// with the same world camera setup.
 LL_TYPE_INSTANCE_HOOK(
     SelectionRenderWireframeHook,
     ll::memory::HookPriority::Normal,
     LevelRendererCamera,
-    &LevelRendererCamera::renderStructureWireframes,
+    &LevelRendererCamera::$renderBlockEntities,
     void,
     BaseActorRenderContext& renderContext,
-    IClientInstance const&  clientInstance,
-    ViewRenderObject const& renderObj
+    bool                    renderAlphaLayer
 ) {
-    origin(renderContext, clientInstance, renderObj);
+    origin(renderContext, renderAlphaLayer);
 
-    if (!app::hasAppKernel()) {
+    if (!renderAlphaLayer || !app::hasAppKernel()) {
         return;
     }
+
+    Vec3 const cameraTargetPos = renderContext.mImpl->mCameraTargetPosition;
 
     auto overlay = app::getAppKernel().selection().overlay();
     if (overlay.selectionMode) {
@@ -200,7 +219,7 @@ LL_TYPE_INSTANCE_HOOK(
                 renderContext.mScreenContext.tessellator,
                 this->wireframeMaterial,
                 *overlay.corner1,
-                this->mCameraTargetPos
+                cameraTargetPos
             );
         }
         if (overlay.corner2) {
@@ -209,7 +228,7 @@ LL_TYPE_INSTANCE_HOOK(
                 renderContext.mScreenContext.tessellator,
                 this->wireframeMaterial,
                 *overlay.corner2,
-                this->mCameraTargetPos
+                cameraTargetPos
             );
         }
     }
@@ -225,7 +244,7 @@ LL_TYPE_INSTANCE_HOOK(
             renderContext.mScreenContext.tessellator,
             this->wireframeMaterial,
             wireframe,
-            renderObj.mViewData->mCameraTargetPos
+            glm::vec3{cameraTargetPos.x, cameraTargetPos.y, cameraTargetPos.z}
         );
     }
 }
@@ -234,16 +253,18 @@ LL_TYPE_INSTANCE_HOOK(
     SelectionClickPos2Hook,
     HookPriority::Normal,
     GameMode,
-    &GameMode::_sendUseItemOnEvents,
+    &GameMode::$useItemOn,
     InteractionResult,
     ItemStack&        item,
     ::BlockPos const& at,
     uchar             face,
     ::Vec3 const&     hit,
+    ::HandSlot        handSlot,
+    ::Block const*    targetBlock,
     bool              isFirstEvent
 ) {
     if (!app::hasAppKernel()) {
-        return origin(item, at, face, hit, isFirstEvent);
+        return origin(item, at, face, hit, handSlot, targetBlock, isFirstEvent);
     }
 
     auto& selectionService = app::getAppKernel().selection();
@@ -254,7 +275,7 @@ LL_TYPE_INSTANCE_HOOK(
         getLogger().debug("Selection pos2: {}", at.toString());
         return InteractionResult{true,false};
     }
-    return origin(item, at, face, hit, isFirstEvent);
+    return origin(item, at, face, hit, handSlot, targetBlock, isFirstEvent);
 }
 
 LL_TYPE_INSTANCE_HOOK(

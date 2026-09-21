@@ -13,9 +13,8 @@
 #include "mc/deps/minecraft_renderer/framebuilder/CSSGameplayFlags.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
 #include "mc/deps/minecraft_renderer/renderer/RenderMaterial.h"
-#include "mc/deps/minecraft_renderer/resources/OffscreenCaptureData.h"
+#include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
 #include "mc/deps/renderer/Camera.h"
-#include "mc/external/render_dragon/resources/ServerResourcePointer.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/CopperBehavior.h"
@@ -26,16 +25,6 @@
 
 #include <glm/ext/matrix_transform.hpp>
 
-
-namespace dragon {
-class ResolvedImageResource {};
-}; // namespace dragon
-namespace mce::framebuilder {
-struct CustomSurfaceShaderMetadata {
-    uint             mHash;
-    CSSGameplayFlags mGameplayFlags;
-};
-} // namespace mce::framebuilder
 
 ResourceLocation& ResourceLocation::operator=(ResourceLocation const& rhs) {
     if (this == &rhs) {
@@ -50,34 +39,22 @@ ResourceLocation& ResourceLocation::operator=(ResourceLocation const& rhs) {
     return *this;
 }
 
-OffscreenCaptureData::OffscreenCaptureData() {
-    mUnk59fd72.as<uint>() = 0;
-    mUnkde1fa8.as<uint>() = 0;
-    mUnk8285b9.as<mce::ServerResourcePointer<dragon::ResolvedImageResource>>() =
-        mce::ServerResourcePointer<dragon::ResolvedImageResource>();
-}
+namespace {
 
-OffscreenCaptureData::OffscreenCaptureData(OffscreenCaptureData const& rhs) {
-    mUnk59fd72.as<uint>() = rhs.mUnk59fd72.as<uint>();
-    mUnkde1fa8.as<uint>() = rhs.mUnkde1fa8.as<uint>();
-    mUnk8285b9.as<mce::ServerResourcePointer<dragon::ResolvedImageResource>>() =
-        rhs.mUnk8285b9.as<mce::ServerResourcePointer<dragon::ResolvedImageResource>>();
-}
-
-namespace dragon {
-struct RenderMetadata {
-    const uint64                                         mID;
-    const mce::framebuilder::CustomSurfaceShaderMetadata mCSSMetadata;
-    const bool                                           mIsItem;
-    std::variant<
-        std::monostate,
-        UIActorOffscreenCaptureDescription,
-        UIThumbnailMeshOffscreenCaptureDescription,
-        UIMeshOffscreenCaptureDescription,
-        UIStructureVolumeOffscreenCaptureDescription>
-        mOffscreenCaptureDescription;
+// dragon::RenderMetadata has no exported constructor besides the copy constructor, and its
+// CustomSurfaceShaderMetadata member is opaque in the SDK. This mirrors the in-memory layout
+// (id, css hash + gameplay flags, isItem, offscreen capture description) so a value can be
+// built locally and handed to BlockActorRenderer::_renderModel.
+struct RenderMetadataInit {
+    int64                               mID;
+    uint                                mCSSHash;
+    mce::framebuilder::CSSGameplayFlags mCSSGameplayFlags;
+    bool                                mIsItem;
+    OffscreenCaptureDescription         mOffscreenCaptureDescription;
 };
-} // namespace dragon
+static_assert(sizeof(RenderMetadataInit) == 64, "RenderMetadataInit layout must match dragon::RenderMetadata");
+
+} // namespace
 
 namespace levischematic::schematic::block_actor {
 
@@ -243,21 +220,21 @@ void SchematicChestRenderer::renderSchematic(
     }
 
     {
-        dragon::RenderMetadata renderMetadata{
-            blockEntityRenderData.pos.hash(),
-            {(uint)blockEntityRenderData.block.getBlockType().mNameInfo->mFullName->getHash(),
-                         (mce::framebuilder::CSSGameplayFlags)1},
+        RenderMetadataInit renderMetadata{
+            static_cast<int64>(blockEntityRenderData.pos.hash()),
+            static_cast<uint>(blockEntityRenderData.block.getBlockType().mNameInfo->mFullName->getHash()),
+            static_cast<mce::framebuilder::CSSGameplayFlags>(1),
             false,
-            renderContext.mOffscreenCaptureDescription
+            OffscreenCaptureDescription{}, // world rendering never captures offscreen
         };
 
+        // The model's default material was replaced with the blending material in the
+        // constructor, so the plain overload renders the chest translucently.
         _renderModel(
             screenContext,
-            renderMetadata,
+            reinterpret_cast<dragon::RenderMetadata const&>(renderMetadata),
             *chestModel,
-            *chestTexture,
-            chestModel->mDefaultMaterial,
-            chestTexture->mTexturePtrs->mColorTexture->getClientTexture()
+            *chestTexture
         );
     }
 }

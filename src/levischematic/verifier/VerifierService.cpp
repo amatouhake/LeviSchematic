@@ -11,11 +11,13 @@
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/client/renderer/game/LevelRenderer.h"
 #include "mc/world/Container.h"
+#include "mc/world/item/Item.h"
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/actor/BlockActor.h"
+#include "mc/world/level/block/actor/component/IVanillaMainBlockActorComponent.h"
 #include "mc/world/level/dimension/Dimension.h"
 
 namespace levischematic::verifier {
@@ -39,7 +41,8 @@ bool matchesContainerSnapshot(
         return false;
     }
 
-    auto* container = blockActor->getContainer();
+    auto* mainComponent = blockActor->_getMainComponent();
+    auto* container     = mainComponent ? mainComponent->getContainer() : nullptr;
     if (!container) {
         return false;
     }
@@ -59,7 +62,8 @@ bool matchesContainerSnapshot(
             return false;
         }
 
-        if (item->getFullNameHash().getHash() != expectedSlot.itemNameHash) {
+        auto const* itemType = item->mItem.get();
+        if (!itemType || itemType->mFullName->getHash() != expectedSlot.itemNameHash) {
             return false;
         }
 

@@ -4,7 +4,11 @@
 
 namespace levischematic::schematic::block_actor {
 
-BaseRenderSchematic::ResourceLocationMap::ResourceLocationMap() = default;
+// ResourceLocation's default constructor is not exported by the game, so build empty
+// locations from an empty path instead.
+BaseRenderSchematic::ResourceLocationMap::ResourceLocationMap()
+: vanilla(Core::PathView("")),
+  blendRes(Core::PathView("")) {}
 
 BaseRenderSchematic::ResourceLocationMap::ResourceLocationMap(ResourceLocation vanillaRes)
 : vanilla(vanillaRes),
