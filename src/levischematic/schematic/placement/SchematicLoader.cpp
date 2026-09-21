@@ -6,11 +6,13 @@
 #include "ll/api/service/Bedrock.h"
 
 
-#include "mc/dataloadhelper/StructureDataLoadHelper.h"
+#include "mc/dataloadhelper/DataLoadHelper.h"
 #include "mc/deps/nbt/CompoundTag.h"
 #include "mc/deps/nbt/CompoundTagVariant.h"
 #include "mc/deps/nbt/ListTag.h"
+#include "mc/legacy/ActorUniqueID.h"
 #include "mc/world/level/Level.h"
+#include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/actor/BlockActor.h"
 #include "mc/world/level/levelgen/structure/StructureBlockPalette.h"
 #include "mc/world/level/levelgen/structure/StructureTemplate.h"
@@ -95,14 +97,57 @@ std::optional<verifier::BlockEntitySnapshot> getBlockEntitySnapshot(StructureTem
     return parseBlockEntitySnapshot(*positionData->mBlockEntityData);
 }
 
-std::shared_ptr<BlockActor> getBlockActor(StructureTemplateData const& data, int flatIndex, DataLoadHelper& helper) {
+// Identity data-load helper used when instantiating schematic block actors purely for
+// projection rendering. StructureDataLoadHelper's constructor is no longer exported by the
+// game, and the block actor position is passed to BlockActor::loadStatic explicitly, so the
+// block actor's own position no longer depends on the helper. Everything else that
+// StructureDataLoadHelper would remap (other world positions embedded in the NBT, e.g. piston
+// / moving block / end gateway targets, and actor unique IDs) is left as stored in the file.
+// That is correct for the block actor renderers this mod provides (chest: only its own state
+// and position are used); a renderer that depends on such embedded positions would need a
+// structure-aware helper.
+class ProjectionDataLoadHelper : public DataLoadHelper {
+public:
+    Vec3            loadPosition(Vec3 const& position) override { return position; }
+    BlockPos        loadBlockPosition(BlockPos const& blockPos) override { return blockPos; }
+    BlockPos        loadBlockPositionOffset(BlockPos const& blockPosOffset) override { return blockPosOffset; }
+    float           loadRotationDegreesX(float x) override { return x; }
+    float           loadRotationDegreesY(float y) override { return y; }
+    float           loadRotationRadiansX(float x) override { return x; }
+    float           loadRotationRadiansY(float y) override { return y; }
+    uchar           loadFacingID(uchar facing) override { return facing; }
+    Vec3            loadDirection(Vec3 const& direction) override { return direction; }
+    Direction::Type loadDirection(Direction::Type direction) override { return direction; }
+    Rotation        loadRotation(Rotation rotation) override { return rotation; }
+    Mirror          loadMirror(Mirror mirror) override { return mirror; }
+    ActorUniqueID   loadActorUniqueID(ActorUniqueID id) override { return id; }
+    ActorUniqueID   loadOwnerID(ActorUniqueID id) override { return id; }
+    InternalComponentRegistry::ComponentInfo const* loadActorInternalComponentInfo(
+        std::unordered_map<HashedString, InternalComponentRegistry::ComponentInfo> const& registry,
+        std::string const&                                                                componentName
+    ) override {
+        auto it = registry.find(HashedString(componentName));
+        return it == registry.end() ? nullptr : &it->second;
+    }
+    DataLoadHelperType getType() const override { return DataLoadHelperType::Default; }
+    bool               shouldResetTime() override { return false; }
+};
+
+std::shared_ptr<BlockActor> getBlockActor(
+    StructureTemplateData const& data,
+    Block const&                 block,
+    BlockPos const&              localPos,
+    int                          flatIndex,
+    Level&                       level
+) {
     auto const* palette = data.getPalette(StructureTemplateData::DEFAULT_PALETTE_NAME());
     if (!palette) {
         return nullptr;
     }
     auto const* positionData = palette->getBlockPositionData(static_cast<uint64_t>(flatIndex));
     if (positionData && positionData->mBlockEntityData) {
-        return BlockActor::loadStatic(ll::service::getLevel(), *positionData->mBlockEntityData, helper);
+        ProjectionDataLoadHelper helper;
+        return BlockActor::loadStatic(block.getBlockType(), localPos, level, *positionData->mBlockEntityData, helper);
     }
     return nullptr;
 }
@@ -183,16 +228,6 @@ LoadAssetResult SchematicLoader::loadMcstructureAsset(std::filesystem::path cons
 
         auto const& data = structureTemplate.mStructureTemplateData;
 
-        // auto datehelper = StructureDataLoadHelper(
-        //     {0, 0, 0},
-        //     data->mStructureWorldOrigin,
-        //     {0, 0, 0},
-        //     ActorUniqueID::INVALID_ID(),
-        //     Rotation::None,
-        //     Mirror::None,
-        //     level
-        // );
-        // auto datahelper = makeStructureDataLoadHelper(data->mStructureWorldOrigin, level);
         for (int x = 0; x < size.x; ++x) {
             for (int y = 0; y < size.y; ++y) {
                 for (int z = 0; z < size.z; ++z) {
@@ -201,20 +236,10 @@ LoadAssetResult SchematicLoader::loadMcstructureAsset(std::filesystem::path cons
                     if (!block || block->isAir()) {
                         continue;
                     }
-                    // getLogger().debug("Pos:{}",localPos.toString().c_str());
-                    auto dataloadhelp = StructureDataLoadHelper(
-                        localPos,
-                        data->mStructureWorldOrigin,
-                        {0, 0, 0},
-                        ActorUniqueID::INVALID_ID(),
-                        Rotation::None,
-                        Mirror::None,
-                        level
-                    );
                     asset->localBlocks.push_back({
                         .localPos    = localPos,
                         .renderBlock = block,
-                        .blockActor  = getBlockActor(data, getFlatIndex(localPos, size), dataloadhelp),
+                        .blockActor  = getBlockActor(data, *block, localPos, getFlatIndex(localPos, size), *level),
                         .compareSpec = verifier::buildCompareSpecFromBlock(*block),
                         .blockEntity = getBlockEntitySnapshot(data, getFlatIndex(localPos, size)),
                     });

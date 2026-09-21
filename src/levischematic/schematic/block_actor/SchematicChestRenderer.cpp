@@ -11,11 +11,11 @@
 #include "mc/deps/core_graphics/TextureSetLayerType.h"
 #include "mc/deps/core_graphics/enums/BlendTarget.h"
 #include "mc/deps/minecraft_renderer/framebuilder/CSSGameplayFlags.h"
+#include "mc/deps/minecraft_renderer/framebuilder/dragon/RenderMetadata.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
 #include "mc/deps/minecraft_renderer/renderer/RenderMaterial.h"
-#include "mc/deps/minecraft_renderer/resources/OffscreenCaptureData.h"
+#include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
 #include "mc/deps/renderer/Camera.h"
-#include "mc/external/render_dragon/resources/ServerResourcePointer.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/CopperBehavior.h"
@@ -26,16 +26,6 @@
 
 #include <glm/ext/matrix_transform.hpp>
 
-
-namespace dragon {
-class ResolvedImageResource {};
-}; // namespace dragon
-namespace mce::framebuilder {
-struct CustomSurfaceShaderMetadata {
-    uint             mHash;
-    CSSGameplayFlags mGameplayFlags;
-};
-} // namespace mce::framebuilder
 
 ResourceLocation& ResourceLocation::operator=(ResourceLocation const& rhs) {
     if (this == &rhs) {
@@ -50,34 +40,64 @@ ResourceLocation& ResourceLocation::operator=(ResourceLocation const& rhs) {
     return *this;
 }
 
-OffscreenCaptureData::OffscreenCaptureData() {
-    mUnk59fd72.as<uint>() = 0;
-    mUnkde1fa8.as<uint>() = 0;
-    mUnk8285b9.as<mce::ServerResourcePointer<dragon::ResolvedImageResource>>() =
-        mce::ServerResourcePointer<dragon::ResolvedImageResource>();
-}
+namespace {
 
-OffscreenCaptureData::OffscreenCaptureData(OffscreenCaptureData const& rhs) {
-    mUnk59fd72.as<uint>() = rhs.mUnk59fd72.as<uint>();
-    mUnkde1fa8.as<uint>() = rhs.mUnkde1fa8.as<uint>();
-    mUnk8285b9.as<mce::ServerResourcePointer<dragon::ResolvedImageResource>>() =
-        rhs.mUnk8285b9.as<mce::ServerResourcePointer<dragon::ResolvedImageResource>>();
-}
+// dragon::RenderMetadata cannot be built through a supported API on LeviLamina 26.51.3: the
+// only exported constructor is the copy constructor, RenderMetadataFactory::createRenderMetadata
+// is not available, and BlockActorRenderDispatcher::render only accepts an already built
+// (optional) metadata object while dispatching to the game's own renderers, not to this one.
+// So the value handed to BlockActorRenderer::_renderModel is assembled in a struct that mirrors
+// the 26.51.3 layout (id, custom surface shader hash + gameplay flags, isItem, offscreen
+// capture description). The size, alignment and field offsets are checked against the SDK
+// type; only the split of the opaque 8-byte CustomSurfaceShaderMetadata into hash + flags is
+// an unchecked assumption (inherited from the pre-migration code). This is a 26.51.3 layout
+// mirror, not an ABI guarantee for other versions.
+struct RenderMetadataMirror {
+    int64                               mID;
+    uint                                mCSSHash;
+    mce::framebuilder::CSSGameplayFlags mCSSGameplayFlags;
+    bool                                mIsItem;
+    OffscreenCaptureDescription         mOffscreenCaptureDescription;
 
-namespace dragon {
-struct RenderMetadata {
-    const uint64                                         mID;
-    const mce::framebuilder::CustomSurfaceShaderMetadata mCSSMetadata;
-    const bool                                           mIsItem;
-    std::variant<
-        std::monostate,
-        UIActorOffscreenCaptureDescription,
-        UIThumbnailMeshOffscreenCaptureDescription,
-        UIMeshOffscreenCaptureDescription,
-        UIStructureVolumeOffscreenCaptureDescription>
-        mOffscreenCaptureDescription;
+    [[nodiscard]] dragon::RenderMetadata const& get() const {
+        return *reinterpret_cast<dragon::RenderMetadata const*>(this);
+    }
 };
-} // namespace dragon
+static_assert(sizeof(RenderMetadataMirror) == sizeof(dragon::RenderMetadata));
+static_assert(alignof(RenderMetadataMirror) == alignof(dragon::RenderMetadata));
+static_assert(offsetof(RenderMetadataMirror, mID) == offsetof(dragon::RenderMetadata, mID));
+static_assert(sizeof(RenderMetadataMirror::mID) == sizeof(dragon::RenderMetadata::mID));
+static_assert(offsetof(RenderMetadataMirror, mCSSHash) == offsetof(dragon::RenderMetadata, mCSSMetadata));
+static_assert(
+    sizeof(RenderMetadataMirror::mCSSHash) + sizeof(RenderMetadataMirror::mCSSGameplayFlags)
+    == sizeof(dragon::RenderMetadata::mCSSMetadata)
+);
+static_assert(
+    offsetof(RenderMetadataMirror, mCSSGameplayFlags) == offsetof(dragon::RenderMetadata, mCSSMetadata) + sizeof(uint)
+);
+static_assert(offsetof(RenderMetadataMirror, mIsItem) == offsetof(dragon::RenderMetadata, mIsItem));
+static_assert(
+    offsetof(RenderMetadataMirror, mOffscreenCaptureDescription)
+    == offsetof(dragon::RenderMetadata, mOffscreenCaptureDescription)
+);
+static_assert(
+    sizeof(RenderMetadataMirror::mOffscreenCaptureDescription)
+    == sizeof(dragon::RenderMetadata::mOffscreenCaptureDescription)
+);
+
+// Metadata for a projected block actor drawn in the world (never an item, never captured
+// offscreen), keyed by the block position like the game's own block actor draws.
+RenderMetadataMirror makeProjectionRenderMetadata(BlockPos const& pos, Block const& block) {
+    return RenderMetadataMirror{
+        static_cast<int64>(pos.hash()),
+        static_cast<uint>(block.getBlockType().mNameInfo->mFullName->getHash()),
+        static_cast<mce::framebuilder::CSSGameplayFlags>(1),
+        false,
+        OffscreenCaptureDescription{},
+    };
+}
+
+} // namespace
 
 namespace levischematic::schematic::block_actor {
 
@@ -243,22 +263,11 @@ void SchematicChestRenderer::renderSchematic(
     }
 
     {
-        dragon::RenderMetadata renderMetadata{
-            blockEntityRenderData.pos.hash(),
-            {(uint)blockEntityRenderData.block.getBlockType().mNameInfo->mFullName->getHash(),
-                         (mce::framebuilder::CSSGameplayFlags)1},
-            false,
-            renderContext.mOffscreenCaptureDescription
-        };
+        auto renderMetadata = makeProjectionRenderMetadata(blockEntityRenderData.pos, blockEntityRenderData.block);
 
-        _renderModel(
-            screenContext,
-            renderMetadata,
-            *chestModel,
-            *chestTexture,
-            chestModel->mDefaultMaterial,
-            chestTexture->mTexturePtrs->mColorTexture->getClientTexture()
-        );
+        // The model's default material was replaced with the blending material in the
+        // constructor, so the plain overload renders the chest translucently.
+        _renderModel(screenContext, renderMetadata.get(), *chestModel, *chestTexture);
     }
 }
 

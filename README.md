@@ -176,7 +176,8 @@ When selection mode is enabled, the source code also supports in-world corner pi
 
 ## Notes
 
+- Targets LeviLamina Client 26.51.x (Minecraft Bedrock 1.26.51). It is a client-side mod and needs no server support.
 - The project works with `.mcstructure` files only.
-- The runtime creates and uses a `schematics` directory for loading and saving structure files.
+- The runtime creates and uses a `schematics` directory (next to `minecraftWorlds` in `games/com.mojang`) for loading and saving structure files.
 - The Y range filter is global to the current projection view, not per placement.
 - Many commands require a currently selected placement. If nothing is selected, load a schematic first or use `/schem select <id>`.

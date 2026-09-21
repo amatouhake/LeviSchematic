@@ -38,7 +38,7 @@ bool refreshProjectionState(
         kernel.blockActorVerifier().refresh();
     }
 
-    auto refreshedBlockProjection = kernel.projection().flushRefresh(coordinator);
+    auto refreshedBlockProjection = kernel.projection().flushRefresh(coordinator, source);
     auto refreshedActorProjection = kernel.blockActorProjection().flushRefresh(coordinator);
     return refreshedBlockProjection || refreshedActorProjection;
 }

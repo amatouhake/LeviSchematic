@@ -7,6 +7,7 @@
 
 #include <memory>
 
+class BlockSource;
 class RenderChunkCoordinator;
 
 namespace levischematic::app {
@@ -21,7 +22,8 @@ public:
     );
 
     [[nodiscard]] bool flushRefresh(
-        std::shared_ptr<RenderChunkCoordinator> const& coordinator
+        std::shared_ptr<RenderChunkCoordinator> const& coordinator,
+        BlockSource*                                   source = nullptr
     );
     [[nodiscard]] std::shared_ptr<const render::ProjectionScene::DimensionScene> sceneForDimension(int dimensionId) const;
     void                                                         clear();

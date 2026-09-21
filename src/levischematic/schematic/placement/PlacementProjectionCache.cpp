@@ -3,6 +3,7 @@
 #include "levischematic/util/PositionUtils.h"
 
 #include "mc/world/level/block/actor/BlockActor.h"
+#include "mc/world/level/block/actor/component/IVanillaRenderBlockActorComponent.h"
 
 namespace levischematic::placement {
 
@@ -75,9 +76,14 @@ PlacementProjectionCache::Record PlacementProjectionCache::buildRecord(Placement
             .placementId = placement.id,
         };
 
-        auto posKey        = util::encodePosKey(resolved.pos);
-        bool hasBlockActor = localEntry.blockActor
-            && localEntry.blockActor->mRendererId == BlockActorRendererId::Chest;
+        auto posKey     = util::encodePosKey(resolved.pos);
+        auto rendererId = BlockActorRendererId::Default;
+        if (localEntry.blockActor) {
+            if (auto const* renderComponent = localEntry.blockActor->_getRenderComponent()) {
+                rendererId = renderComponent->getRendererId();
+            }
+        }
+        bool hasBlockActor = rendererId == BlockActorRendererId::Chest;
         if (auto overrideIt = placement.overrides.find(posKey); overrideIt != placement.overrides.end()) {
             if (overrideIt->second.kind == OverrideEntry::Kind::Remove) {
                 record.byPos.erase(posKey);
@@ -96,7 +102,7 @@ PlacementProjectionCache::Record PlacementProjectionCache::buildRecord(Placement
                 .pos        = resolved.pos,
                 .block      = resolved.block,
                 .blockActor = localEntry.blockActor,
-                .rendererId = localEntry.blockActor->mRendererId,
+                .rendererId = rendererId,
                 .color      = render::kDefaultProjectionColor,
             });
         }

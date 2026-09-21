@@ -23,7 +23,7 @@ namespace levischematic::command {
 
 struct SchemLoadParam {
     std::string          filename;
-    CommandPositionFloat pos;
+    CommandPositionFloat pos{};
 };
 
 struct SchemNamedParam {
@@ -53,21 +53,21 @@ struct SchemSelectParam {
 };
 
 struct SchemOriginParam {
-    CommandPositionFloat pos;
+    CommandPositionFloat pos{};
 };
 
 struct SchemBlockPosParam {
-    CommandPositionFloat pos;
+    CommandPositionFloat pos{};
 };
 
 struct SchemBlockSetParam {
-    CommandPositionFloat pos;
+    CommandPositionFloat pos{};
     CommandBlockName     blockName;
     int                  title_date;
 };
 
 struct SchemBlockSetSimpleParam {
-    CommandPositionFloat pos;
+    CommandPositionFloat pos{};
     CommandBlockName     blockName;
 };
 

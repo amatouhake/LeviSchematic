@@ -11,7 +11,9 @@ option_end()
 -- add_requires("levilamina x.x.x") for a specific version
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
-add_requires("levilamina v26.20.1", {configs = {target_type = get_config("target_type")}})
+-- The "v" form checks out the LeviLamina git tag directly; the LeviMC xmake-repo had no
+-- 26.51.3 version entry when this was written. Switch to "levilamina 26.51.3" once it has one.
+add_requires("levilamina v26.51.3", {configs = {target_type = get_config("target_type")}})
 
 add_requires("levibuildscript")
 

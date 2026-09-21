@@ -11,11 +11,13 @@
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/client/renderer/game/LevelRenderer.h"
 #include "mc/world/Container.h"
+#include "mc/world/item/Item.h"
 #include "mc/world/item/ItemStack.h"
 #include "mc/world/level/BlockSource.h"
 #include "mc/world/level/Level.h"
 #include "mc/world/level/block/Block.h"
 #include "mc/world/level/block/actor/BlockActor.h"
+#include "mc/world/level/block/actor/component/IVanillaMainBlockActorComponent.h"
 #include "mc/world/level/dimension/Dimension.h"
 
 namespace levischematic::verifier {
@@ -39,7 +41,8 @@ bool matchesContainerSnapshot(
         return false;
     }
 
-    auto* container = blockActor->getContainer();
+    auto* mainComponent = blockActor->_getMainComponent();
+    auto* container     = mainComponent ? mainComponent->getContainer() : nullptr;
     if (!container) {
         return false;
     }
@@ -59,7 +62,8 @@ bool matchesContainerSnapshot(
             return false;
         }
 
-        if (item->getFullNameHash().getHash() != expectedSlot.itemNameHash) {
+        auto const* itemType = item->mItem.get();
+        if (!itemType || itemType->mFullName->getHash() != expectedSlot.itemNameHash) {
             return false;
         }
 
@@ -111,7 +115,7 @@ void VerifierService::handleBlockChanged(BlockSource& source, BlockPos const& po
 
     updateStatus(dimensionId, pos, evaluateBlock(expectedIt->second, source, block));
     mProjector.rebuild(mPlacementState, mState, mViewState);
-    mProjector.triggerRebuildForPosition(dimensionId, pos, resolveCoordinator(source));
+    mProjector.triggerRebuildForPosition(dimensionId, pos, resolveCoordinator(source), &source);
 }
 
 void VerifierService::refresh() {
@@ -146,7 +150,7 @@ void VerifierService::refresh(BlockSource& source) {
         updateStatus(dimensionId, expected.pos, evaluateBlock(expected, source, block));
     }
 
-    mProjector.rebuildAndRefresh(mPlacementState, mState, mViewState, resolveCoordinator(source));
+    mProjector.rebuildAndRefresh(mPlacementState, mState, mViewState, resolveCoordinator(source), &source);
 }
 
 void VerifierService::handleJoinLevel() {
@@ -217,11 +221,21 @@ void VerifierService::attachToRuntime() {
 }
 
 void VerifierService::detachFromRuntime() {
-    if (mListener) {
+    // The cached BlockSource pointers may be dangling by now: shutdown runs from
+    // ServerInstance::startLeaveGame after the game's own leave logic, and a
+    // level tick between the exit event and that point can have re-attached the
+    // listener. Only touch a source that the level still reports as live and
+    // that is the very object the listener was attached to.
+    auto level = ll::service::getLevel();
+    if (mListener && level) {
         for (auto const& [dimId, source] : mSourcesByDimension) {
-            (void)dimId;
-            if (source) {
-                source->removeListener(*mListener);
+            auto dimension = level->getDimension(dimId).lock();
+            if (!dimension || !source) {
+                continue;
+            }
+            auto& liveSource = dimension->getBlockSourceFromMainChunkSource();
+            if (&liveSource == source) {
+                liveSource.removeListener(*mListener);
             }
         }
     }
