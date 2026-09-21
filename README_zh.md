@@ -176,7 +176,8 @@ LeviShematic 是一个面向 Bedrock 客户端的结构投影模组，核心围�
 
 ## 说明
 
+- 目标环境为 LeviLamina Client 26.51.x（Minecraft Bedrock 1.26.51），纯客户端模组，无需服务端支持。
 - 项目当前只围绕 `.mcstructure` 文件工作。
-- 运行时会使用 `schematics` 目录来加载和保存结构文件。
+- 运行时会使用 `schematics` 目录（位于 `games/com.mojang` 下，与 `minecraftWorlds` 同级）来加载和保存结构文件。
 - Y 范围过滤是当前投影视图的全局设置，不是单个 placement 的独立设置。
 - 很多指令依赖当前已选中的 placement。如果没有选中项，请先使用 `/schem load` 或 `/schem select <id>`。
