@@ -221,11 +221,21 @@ void VerifierService::attachToRuntime() {
 }
 
 void VerifierService::detachFromRuntime() {
-    if (mListener) {
+    // The cached BlockSource pointers may be dangling by now: shutdown runs from
+    // ServerInstance::startLeaveGame after the game's own leave logic, and a
+    // level tick between the exit event and that point can have re-attached the
+    // listener. Only touch a source that the level still reports as live and
+    // that is the very object the listener was attached to.
+    auto level = ll::service::getLevel();
+    if (mListener && level) {
         for (auto const& [dimId, source] : mSourcesByDimension) {
-            (void)dimId;
-            if (source) {
-                source->removeListener(*mListener);
+            auto dimension = level->getDimension(dimId).lock();
+            if (!dimension || !source) {
+                continue;
+            }
+            auto& liveSource = dimension->getBlockSourceFromMainChunkSource();
+            if (&liveSource == source) {
+                liveSource.removeListener(*mListener);
             }
         }
     }
